@@ -1,0 +1,71 @@
+---
+- name: install java
+  apt: name=openjdk-8-jdk update_cache=yes state=latest
+  become: true
+
+- name: add group "tomcat"
+  group: name=tomcat
+  become: true
+
+- name: add user "tomcat"
+  user: name=tomcat group=tomcat password={{ tomcat_user_password }} home=/usr/share/tomcat createhome=no
+  become: True
+
+- name: Download Tomcat
+  get_url: url={{ tomcat_url }} dest={{ tomcat_download_dest }}/{{ tomcat_filename }}.tar.gz
+
+- name: Extract archive
+  command: chdir=/usr/share /bin/tar xvf {{ tomcat_download_dest }}/{{ tomcat_filename }}.tar.gz -C {{ tomcat_install_dest }} creates={{ tomcat_install_dest }}/{{ tomcat_filename }}
+  become: true
+
+- name: Symlink install directory
+  file: src={{ tomcat_install_dest }}/{{ tomcat_filename }} path=/usr/share/tomcat state=link
+  become: true
+
+- name: change permissions
+  shell: /bin/chmod -R 777 {{ tomcat_install_dest }}/{{ tomcat_filename }}
+  become: true
+
+- name: Change ownership
+  shell: /bin/chown -R tomcat:tomcat {{ tomcat_install_dest }}/{{ tomcat_filename }}
+  become: true
+
+- name: Change ownership of symlink
+  file: path=/usr/share/tomcat/ owner=tomcat group=tomcat state=directory recurse=yes
+
+- name: Configure Tomcat server
+  template: src=server.xml dest={{ tomcat_install_dest }}/{{ tomcat_filename }}/conf/
+  notify: restart tomcat
+
+- name: Configure Tomcat users
+  template: src=tomcat-users.xml dest={{ tomcat_install_dest }}/{{ tomcat_filename }}/conf/
+  notify: restart tomcat
+
+- name: Install and Run Tomcat init script (systemd)
+  block:
+    - template: src=tomcat.service dest=/etc/systemd/system/tomcat.service mode=0755
+    - name: reload systemd daemon and restart tomcat
+      systemd:
+        daemon_reload: yes
+        name: tomcat
+    - service: name=tomcat state=started enabled=true
+  when: not tomcat_start_nohup
+  tags: start
+  become: true
+
+- name: Install and Run Tomcat init script (nohup)
+  block:
+    - copy: src=tomcat-initscript.sh dest=/usr/share/tomcat-initscript.sh mode=0755
+    - name: Start Tomcat with nohup
+      shell: /usr/share/tomcat-initscript.sh start
+  when: tomcat_start_nohup
+  tags: start
+
+- name: deploy iptables rules
+  template: src=iptables_save dest=/etc/sysconfig/iptables
+  notify: restart iptables
+  when: modify_iptables
+
+- name: wait for tomcat to start
+  wait_for: port={{ tomcat_http_port }}
+  tags: start
